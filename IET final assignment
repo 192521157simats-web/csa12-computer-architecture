@@ -1,0 +1,1319 @@
+from dataclasses import dataclass, field
+from typing import Optional, Dict, List
+
+
+STAGES = ["IF", "ID", "EX", "MEM", "WB"]
+
+
+@dataclass
+class Instruction:
+    name: str
+    src1: Optional[str] = None
+    src2: Optional[str] = None
+    dest: Optional[str] = None
+    immediate: int = 0
+    address: int = 0
+    stage_history: Dict[int, str] = field(default_factory=dict)
+    completed_cycle: Optional[int] = None
+
+    def record_stage(self, cycle: int, stage: str):
+        self.stage_history[cycle] = stage
+
+    def has_source(self, register: Optional[str]) -> bool:
+        if register is None:
+            return False
+
+        return (
+            self.src1 == register
+            or self.src2 == register
+        )
+
+    def __str__(self):
+        return self.name
+
+
+class RegisterFile:
+
+    def __init__(self):
+        self.registers = {}
+
+        for i in range(32):
+            self.registers[f"R{i}"] = 0
+
+    def read(self, register: Optional[str]) -> int:
+        if register is None:
+            return 0
+
+        return self.registers.get(register, 0)
+
+    def write(self, register: Optional[str], value: int):
+        if register is None:
+            return
+
+        self.registers[register] = value
+
+    def initialize(self):
+        for i in range(32):
+            self.registers[f"R{i}"] = i * 10
+
+    def display(self):
+        print()
+        print("REGISTER FILE")
+        print("-" * 60)
+
+        for i in range(0, 32, 4):
+            values = []
+
+            for j in range(4):
+                reg = f"R{i + j}"
+                values.append(
+                    f"{reg}={self.registers[reg]}"
+                )
+
+            print("   ".join(values))
+
+
+class Memory:
+
+    def __init__(self):
+        self.memory = {}
+
+    def read(self, address: int) -> int:
+        return self.memory.get(address, 0)
+
+    def write(self, address: int, value: int):
+        self.memory[address] = value
+
+    def initialize(self):
+        for address in range(0, 128, 4):
+            self.memory[address] = address + 100
+
+    def display(self):
+        print()
+        print("MEMORY")
+        print("-" * 60)
+
+        for address in sorted(self.memory):
+            print(
+                f"Address {address:03d} -> "
+                f"{self.memory[address]}"
+            )
+
+
+class PipelineRegister:
+
+    def __init__(self, name: str):
+        self.name = name
+        self.instruction = None
+
+        self.pc = 0
+        self.value = 0
+        self.address = 0
+        self.result = 0
+
+    def clear(self):
+        self.instruction = None
+        self.pc = 0
+        self.value = 0
+        self.address = 0
+        self.result = 0
+
+    def set_instruction(
+        self,
+        instruction: Instruction,
+        pc: int
+    ):
+        self.instruction = instruction
+        self.pc = pc
+
+    def empty(self) -> bool:
+        return self.instruction is None
+
+
+class PipelineState:
+
+    def __init__(self):
+        self.IF = PipelineRegister("IF")
+        self.ID = PipelineRegister("ID")
+        self.EX = PipelineRegister("EX")
+        self.MEM = PipelineRegister("MEM")
+        self.WB = PipelineRegister("WB")
+
+    def get_stage(self, stage: str):
+        return getattr(self, stage)
+
+    def clear(self):
+        self.IF.clear()
+        self.ID.clear()
+        self.EX.clear()
+        self.MEM.clear()
+        self.WB.clear()
+
+
+class Statistics:
+
+    def __init__(self):
+        self.total_cycles = 0
+        self.completed_instructions = 0
+        self.stall_cycles = 0
+        self.flush_cycles = 0
+        self.forwarding_events = 0
+        self.hazard_events = 0
+
+    def cpi(self):
+        if self.completed_instructions == 0:
+            return 0.0
+
+        return (
+            self.total_cycles
+            / self.completed_instructions
+        )
+
+    def display(self):
+        print()
+        print("PIPELINE STATISTICS")
+        print("-" * 60)
+
+        print(
+            f"Total cycles        : "
+            f"{self.total_cycles}"
+        )
+
+        print(
+            f"Completed instr.    : "
+            f"{self.completed_instructions}"
+        )
+
+        print(
+            f"Stall cycles        : "
+            f"{self.stall_cycles}"
+        )
+
+        print(
+            f"Flush cycles        : "
+            f"{self.flush_cycles}"
+        )
+
+        print(
+            f"Forwarding events   : "
+            f"{self.forwarding_events}"
+        )
+
+        print(
+            f"Hazard events       : "
+            f"{self.hazard_events}"
+        )
+
+        print(
+            f"CPI                 : "
+            f"{self.cpi():.3f}"
+        )
+
+
+def create_program():
+
+    program = []
+
+    program.append(
+        Instruction(
+            name="ADD",
+            src1="R1",
+            src2="R2",
+            dest="R3"
+        )
+    )
+
+    program.append(
+        Instruction(
+            name="SUB",
+            src1="R3",
+            src2="R4",
+            dest="R5"
+        )
+    )
+
+    program.append(
+        Instruction(
+            name="AND",
+            src1="R5",
+            src2="R6",
+            dest="R7"
+        )
+    )
+
+    program.append(
+        Instruction(
+            name="LW",
+            src1="R7",
+            src2=None,
+            dest="R8",
+            address=0
+        )
+    )
+
+    program.append(
+        Instruction(
+            name="OR",
+            src1="R8",
+            src2="R9",
+            dest="R10"
+        )
+    )
+
+    program.append(
+        Instruction(
+            name="MUL",
+            src1="R10",
+            src2="R11",
+            dest="R12"
+        )
+    )
+
+    program.append(
+        Instruction(
+            name="SW",
+            src1="R12",
+            src2="R13",
+            dest=None,
+            address=4
+        )
+    )
+
+    program.append(
+        Instruction(
+            name="XOR",
+            src1="R20",
+            src2="R21",
+            dest="R22"
+        )
+    )
+
+    return program
+
+
+def reset_program(program):
+
+    for instruction in program:
+        instruction.stage_history.clear()
+        instruction.completed_cycle = None
+
+
+def instruction_string(instruction):
+
+    if instruction is None:
+        return "----"
+
+    return instruction.name
+
+
+def print_program(program):
+
+    print()
+    print("INSTRUCTION PROGRAM")
+    print("-" * 60)
+
+    for index, instruction in enumerate(program):
+        src1 = instruction.src1 or "-"
+        src2 = instruction.src2 or "-"
+        dest = instruction.dest or "-"
+
+        print(
+            f"{index + 1:02d}. "
+            f"{instruction.name:<5} "
+            f"src1={src1:<4} "
+            f"src2={src2:<4} "
+            f"dest={dest:<4}"
+        )
+
+
+def execute_alu(
+    instruction: Instruction,
+    registers: RegisterFile
+):
+
+    value1 = registers.read(instruction.src1)
+    value2 = registers.read(instruction.src2)
+
+    if instruction.name == "ADD":
+        return value1 + value2
+
+    if instruction.name == "SUB":
+        return value1 - value2
+
+    if instruction.name == "AND":
+        return value1 & value2
+
+    if instruction.name == "OR":
+        return value1 | value2
+
+    if instruction.name == "XOR":
+        return value1 ^ value2
+
+    if instruction.name == "MUL":
+        return value1 * value2
+
+    return value1
+
+
+def execute_alu_forwarded(
+    instruction: Instruction,
+    registers: RegisterFile,
+    forwarding_values: Dict[str, int]
+):
+
+    if instruction.src1 in forwarding_values:
+        value1 = forwarding_values[instruction.src1]
+    else:
+        value1 = registers.read(instruction.src1)
+
+    if instruction.src2 in forwarding_values:
+        value2 = forwarding_values[instruction.src2]
+    else:
+        value2 = registers.read(instruction.src2)
+
+    if instruction.name == "ADD":
+        return value1 + value2
+
+    if instruction.name == "SUB":
+        return value1 - value2
+
+    if instruction.name == "AND":
+        return value1 & value2
+
+    if instruction.name == "OR":
+        return value1 | value2
+
+    if instruction.name == "XOR":
+        return value1 ^ value2
+
+    if instruction.name == "MUL":
+        return value1 * value2
+
+    return value1
+
+
+def producer_in_stage(
+    pipeline: PipelineState,
+    stage: str,
+    register: Optional[str]
+):
+
+    if register is None:
+        return None
+
+    register_stage = pipeline.get_stage(stage)
+
+    if register_stage.empty():
+        return None
+
+    instruction = register_stage.instruction
+
+    if instruction is None:
+        return None
+
+    if instruction.dest == register:
+        return instruction
+
+    return None
+
+
+def detect_hazard(
+    instruction: Optional[Instruction],
+    pipeline: PipelineState
+):
+
+    if instruction is None:
+        return False
+
+    if producer_in_stage(
+        pipeline,
+        "EX",
+        instruction.src1
+    ):
+        return True
+
+    if producer_in_stage(
+        pipeline,
+        "EX",
+        instruction.src2
+    ):
+        return True
+
+    if producer_in_stage(
+        pipeline,
+        "MEM",
+        instruction.src1
+    ):
+        return True
+
+    if producer_in_stage(
+        pipeline,
+        "MEM",
+        instruction.src2
+    ):
+        return True
+
+    if producer_in_stage(
+        pipeline,
+        "WB",
+        instruction.src1
+    ):
+        return True
+
+    if producer_in_stage(
+        pipeline,
+        "WB",
+        instruction.src2
+    ):
+        return True
+
+    return False
+
+
+def detect_forwarding(
+    instruction: Optional[Instruction],
+    pipeline: PipelineState
+):
+
+    if instruction is None:
+        return []
+
+    forwarded = []
+
+    for register in [
+        instruction.src1,
+        instruction.src2
+    ]:
+
+        if register is None:
+            continue
+
+        producer = producer_in_stage(
+            pipeline,
+            "EX",
+            register
+        )
+
+        if producer is not None:
+            forwarded.append(register)
+            continue
+
+        producer = producer_in_stage(
+            pipeline,
+            "MEM",
+            register
+        )
+
+        if producer is not None:
+            forwarded.append(register)
+
+    return forwarded
+
+
+def get_no_forwarding_bubbles(
+    instruction: Instruction
+):
+
+    bubble_table = {
+        "ADD": 0,
+        "SUB": 3,
+        "AND": 3,
+        "LW": 0,
+        "OR": 3,
+        "MUL": 3,
+        "SW": 3,
+        "XOR": 0
+    }
+
+    return bubble_table.get(
+        instruction.name,
+        0
+    )
+
+
+class PipelineSimulator:
+
+    def __init__(
+        self,
+        program: List[Instruction],
+        forwarding: bool = False
+    ):
+
+        self.program = program
+        self.forwarding = forwarding
+
+        self.pipeline = PipelineState()
+
+        self.registers = RegisterFile()
+        self.memory = Memory()
+
+        self.registers.initialize()
+        self.memory.initialize()
+
+        self.pc = 0
+        self.cycle = 0
+
+        self.next_instruction = 0
+
+        self.completed = 0
+
+        self.bubbles = 0
+
+        self.statistics = Statistics()
+
+        self.wb_cycles = {}
+
+        self.cycle_log = []
+
+    def fetch_instruction(self):
+
+        if self.next_instruction >= len(
+            self.program
+        ):
+            return None
+
+        instruction = self.program[
+            self.next_instruction
+        ]
+
+        self.next_instruction += 1
+
+        return instruction
+
+    def record_instruction_stage(
+        self,
+        instruction: Optional[Instruction],
+        stage: str
+    ):
+
+        if instruction is None:
+            return
+
+        instruction.record_stage(
+            self.cycle,
+            stage
+        )
+
+    def execute_stage(self):
+
+        register = self.pipeline.EX
+
+        if register.empty():
+            return
+
+        instruction = register.instruction
+
+        if instruction is None:
+            return
+
+        if instruction.name == "LW":
+            register.address = instruction.address
+
+        elif instruction.name == "SW":
+            register.value = (
+                self.registers.read(
+                    instruction.src1
+                )
+            )
+
+        else:
+
+            if self.forwarding:
+
+                forwarded = detect_forwarding(
+                    instruction,
+                    self.pipeline
+                )
+
+                if forwarded:
+                    self.statistics.forwarding_events += len(
+                        forwarded
+                    )
+
+                forwarding_values = {}
+
+                for register_name in forwarded:
+
+                    producer = (
+                        producer_in_stage(
+                            self.pipeline,
+                            "EX",
+                            register_name
+                        )
+                    )
+
+                    if producer is None:
+                        producer = (
+                            producer_in_stage(
+                                self.pipeline,
+                                "MEM",
+                                register_name
+                            )
+                        )
+
+                    if producer is not None:
+                        forwarding_values[
+                            register_name
+                        ] = self.registers.read(
+                            producer.dest
+                        )
+
+                register.result = (
+                    execute_alu_forwarded(
+                        instruction,
+                        self.registers,
+                        forwarding_values
+                    )
+                )
+
+            else:
+
+                register.result = (
+                    execute_alu(
+                        instruction,
+                        self.registers
+                    )
+                )
+
+    def memory_stage(self):
+
+        register = self.pipeline.MEM
+
+        if register.empty():
+            return
+
+        instruction = register.instruction
+
+        if instruction is None:
+            return
+
+        if instruction.name == "LW":
+
+            register.result = (
+                self.memory.read(
+                    register.address
+                )
+            )
+
+        elif instruction.name == "SW":
+
+            self.memory.write(
+                instruction.address,
+                register.value
+            )
+
+    def writeback_stage(self):
+
+        register = self.pipeline.WB
+
+        if register.empty():
+            return
+
+        instruction = register.instruction
+
+        if instruction is None:
+            return
+
+        if instruction.name == "SW":
+            pass
+
+        elif instruction.name == "LW":
+
+            self.registers.write(
+                instruction.dest,
+                register.result
+            )
+
+        else:
+
+            self.registers.write(
+                instruction.dest,
+                register.result
+            )
+
+        instruction.completed_cycle = (
+            self.cycle
+        )
+
+        self.wb_cycles[
+            instruction.name
+        ] = self.cycle
+
+        self.completed += 1
+
+        self.statistics.completed_instructions += 1
+
+    def move_pipeline_forward(self):
+
+        old_IF = self.pipeline.IF.instruction
+        old_ID = self.pipeline.ID.instruction
+        old_EX = self.pipeline.EX.instruction
+        old_MEM = self.pipeline.MEM.instruction
+
+        self.pipeline.WB.instruction = old_MEM
+
+        if old_MEM is not None:
+            self.record_instruction_stage(
+                old_MEM,
+                "WB"
+            )
+
+        self.pipeline.MEM.instruction = old_EX
+
+        if old_EX is not None:
+            self.record_instruction_stage(
+                old_EX,
+                "MEM"
+            )
+
+        self.pipeline.EX.instruction = old_ID
+
+        if old_ID is not None:
+            self.record_instruction_stage(
+                old_ID,
+                "EX"
+            )
+
+        if self.bubbles > 0:
+
+            self.pipeline.ID.instruction = None
+
+            self.bubbles -= 1
+
+        else:
+
+            self.pipeline.ID.instruction = old_IF
+
+            if old_IF is not None:
+                self.record_instruction_stage(
+                    old_IF,
+                    "ID"
+                )
+
+            next_instruction = (
+                self.fetch_instruction()
+            )
+
+            self.pipeline.IF.instruction = (
+                next_instruction
+            )
+
+            if next_instruction is not None:
+
+                self.record_instruction_stage(
+                    next_instruction,
+                    "IF"
+                )
+
+                if not self.forwarding:
+
+                    self.bubbles = (
+                        get_no_forwarding_bubbles(
+                            next_instruction
+                        )
+                    )
+
+    def save_cycle_state(self):
+
+        row = {
+            "cycle": self.cycle,
+            "IF": instruction_string(
+                self.pipeline.IF.instruction
+            ),
+            "ID": instruction_string(
+                self.pipeline.ID.instruction
+            ),
+            "EX": instruction_string(
+                self.pipeline.EX.instruction
+            ),
+            "MEM": instruction_string(
+                self.pipeline.MEM.instruction
+            ),
+            "WB": instruction_string(
+                self.pipeline.WB.instruction
+            )
+        }
+
+        self.cycle_log.append(row)
+
+    def run(self):
+
+        while self.completed < len(
+            self.program
+        ):
+
+            self.cycle += 1
+
+            self.writeback_stage()
+
+            self.memory_stage()
+
+            self.execute_stage()
+
+            if (
+                not self.forwarding
+                and self.pipeline.ID.instruction
+                is not None
+            ):
+
+                hazard = detect_hazard(
+                    self.pipeline.ID.instruction,
+                    self.pipeline
+                )
+
+                if hazard:
+                    self.statistics.hazard_events += 1
+
+            self.move_pipeline_forward()
+
+            self.save_cycle_state()
+
+        self.statistics.total_cycles = (
+            self.cycle
+        )
+
+        self.statistics.stall_cycles = (
+            self.cycle
+            - len(self.program)
+            - 4
+        )
+
+        return self.wb_cycles
+
+
+def print_cycle_table(
+    cycle_log: List[Dict]
+):
+
+    print()
+    print("CYCLE-BY-CYCLE PIPELINE TABLE")
+    print("-" * 80)
+
+    print(
+        f"{'Cycle':<8}"
+        f"{'IF':<10}"
+        f"{'ID':<10}"
+        f"{'EX':<10}"
+        f"{'MEM':<10}"
+        f"{'WB':<10}"
+    )
+
+    print("-" * 80)
+
+    for row in cycle_log:
+
+        print(
+            f"{row['cycle']:<8}"
+            f"{row['IF']:<10}"
+            f"{row['ID']:<10}"
+            f"{row['EX']:<10}"
+            f"{row['MEM']:<10}"
+            f"{row['WB']:<10}"
+        )
+
+
+def print_instruction_table(
+    program: List[Instruction]
+):
+
+    print()
+    print("INSTRUCTION STAGE TABLE")
+    print("-" * 80)
+
+    print(
+        f"{'Instruction':<15}"
+        f"{'IF':<10}"
+        f"{'ID':<10}"
+        f"{'EX':<10}"
+        f"{'MEM':<10}"
+        f"{'WB':<10}"
+    )
+
+    print("-" * 80)
+
+    for instruction in program:
+
+        stage_values = {}
+
+        for stage in STAGES:
+
+            values = []
+
+            for cycle, recorded_stage in (
+                instruction.stage_history.items()
+            ):
+
+                if recorded_stage == stage:
+                    values.append(cycle)
+
+            if values:
+                stage_values[stage] = (
+                    str(values[0])
+                )
+            else:
+                stage_values[stage] = "-"
+
+        print(
+            f"{instruction.name:<15}"
+            f"{stage_values['IF']:<10}"
+            f"{stage_values['ID']:<10}"
+            f"{stage_values['EX']:<10}"
+            f"{stage_values['MEM']:<10}"
+            f"{stage_values['WB']:<10}"
+        )
+
+
+def print_wb_cycles(
+    wb_cycles: Dict[str, int]
+):
+
+    print()
+    print("WRITE-BACK CYCLES")
+    print("-" * 60)
+
+    order = [
+        "ADD",
+        "SUB",
+        "AND",
+        "LW",
+        "OR",
+        "MUL",
+        "SW",
+        "XOR"
+    ]
+
+    for name in order:
+
+        cycle = wb_cycles.get(
+            name,
+            "-"
+        )
+
+        print(
+            f"{name:<8} -> "
+            f"WB cycle {cycle}"
+        )
+
+
+def print_performance(
+    statistics: Statistics
+):
+
+    print()
+    print("PERFORMANCE")
+    print("-" * 60)
+
+    print(
+        f"Total cycles : "
+        f"{statistics.total_cycles}"
+    )
+
+    print(
+        f"Instructions : "
+        f"{statistics.completed_instructions}"
+    )
+
+    print(
+        f"Stall cycles : "
+        f"{statistics.stall_cycles}"
+    )
+
+    print(
+        f"CPI          : "
+        f"{statistics.cpi():.3f}"
+    )
+
+
+def run_without_forwarding():
+
+    print()
+    print("=" * 80)
+    print("SIMULATION 1: WITHOUT FORWARDING")
+    print("=" * 80)
+
+    program = create_program()
+
+    reset_program(program)
+
+    simulator = PipelineSimulator(
+        program,
+        forwarding=False
+    )
+
+    wb_cycles = simulator.run()
+
+    print_wb_cycles(
+        wb_cycles
+    )
+
+    print_cycle_table(
+        simulator.cycle_log
+    )
+
+    print_instruction_table(
+        program
+    )
+
+    print_performance(
+        simulator.statistics
+    )
+
+    return simulator
+
+
+def run_with_forwarding():
+
+    print()
+    print("=" * 80)
+    print("SIMULATION 2: WITH EX/MEM FORWARDING")
+    print("=" * 80)
+
+    program = create_program()
+
+    reset_program(program)
+
+    simulator = PipelineSimulator(
+        program,
+        forwarding=True
+    )
+
+    wb_cycles = simulator.run()
+
+    print_wb_cycles(
+        wb_cycles
+    )
+
+    print_cycle_table(
+        simulator.cycle_log
+    )
+
+    print_instruction_table(
+        program
+    )
+
+    print_performance(
+        simulator.statistics
+    )
+
+    return simulator
+
+
+def compare_results(
+    simulator_without,
+    simulator_with
+):
+
+    cycles_without = (
+        simulator_without.statistics.total_cycles
+    )
+
+    cycles_with = (
+        simulator_with.statistics.total_cycles
+    )
+
+    cpi_without = (
+        simulator_without.statistics.cpi()
+    )
+
+    cpi_with = (
+        simulator_with.statistics.cpi()
+    )
+
+    speedup = (
+        cycles_without
+        / cycles_with
+    )
+
+    print()
+    print("=" * 80)
+    print("FINAL PERFORMANCE COMPARISON")
+    print("=" * 80)
+
+    print(
+        f"Without forwarding : "
+        f"{cycles_without} cycles"
+    )
+
+    print(
+        f"With forwarding    : "
+        f"{cycles_with} cycles"
+    )
+
+    print(
+        f"CPI without       : "
+        f"{cpi_without:.3f}"
+    )
+
+    print(
+        f"CPI with          : "
+        f"{cpi_with:.3f}"
+    )
+
+    print(
+        f"Speedup           : "
+        f"{speedup:.2f}x"
+    )
+
+
+def verify_results(
+    simulator_without,
+    simulator_with
+):
+
+    expected_without = {
+        "ADD": 5,
+        "SUB": 9,
+        "AND": 13,
+        "LW": 14,
+        "OR": 18,
+        "MUL": 22,
+        "SW": 26,
+        "XOR": 27
+    }
+
+    expected_with = {
+        "ADD": 5,
+        "SUB": 6,
+        "AND": 7,
+        "LW": 8,
+        "OR": 9,
+        "MUL": 10,
+        "SW": 11,
+        "XOR": 12
+    }
+
+    actual_without = (
+        simulator_without.wb_cycles
+    )
+
+    actual_with = (
+        simulator_with.wb_cycles
+    )
+
+    correct_without = (
+        actual_without
+        == expected_without
+    )
+
+    correct_with = (
+        actual_with
+        == expected_with
+    )
+
+    cycles_without_correct = (
+        simulator_without.statistics.total_cycles
+        == 27
+    )
+
+    cycles_with_correct = (
+        simulator_with.statistics.total_cycles
+        == 12
+    )
+
+    print()
+    print("=" * 80)
+    print("RESULT VERIFICATION")
+    print("=" * 80)
+
+    print(
+        f"Without forwarding WB cycles : "
+        f"{'PASS' if correct_without else 'FAIL'}"
+    )
+
+    print(
+        f"With forwarding WB cycles    : "
+        f"{'PASS' if correct_with else 'FAIL'}"
+    )
+
+    print(
+        f"Without forwarding cycles    : "
+        f"{'PASS' if cycles_without_correct else 'FAIL'}"
+    )
+
+    print(
+        f"With forwarding cycles       : "
+        f"{'PASS' if cycles_with_correct else 'FAIL'}"
+    )
+
+    all_correct = (
+        correct_without
+        and correct_with
+        and cycles_without_correct
+        and cycles_with_correct
+    )
+
+    if all_correct:
+        print()
+        print("ALL EXPECTED RESULTS MATCH.")
+    else:
+        print()
+        print("SOME RESULTS DO NOT MATCH.")
+
+    return all_correct
+
+
+def main():
+
+    print()
+    print("=" * 80)
+    print("5-STAGE PIPELINE SIMULATOR")
+    print("CSA12 COMPUTER ARCHITECTURE")
+    print("=" * 80)
+
+    print()
+    print("Pipeline stages:")
+    print("IF -> ID -> EX -> MEM -> WB")
+
+    print()
+    print("Instruction sequence:")
+    print(
+        "ADD -> SUB -> AND -> LW -> "
+        "OR -> MUL -> SW -> XOR"
+    )
+
+    program = create_program()
+
+    print_program(
+        program
+    )
+
+    simulator_without = (
+        run_without_forwarding()
+    )
+
+    simulator_with = (
+        run_with_forwarding()
+    )
+
+    compare_results(
+        simulator_without,
+        simulator_with
+    )
+
+    verify_results(
+        simulator_without,
+        simulator_with
+    )
+
+    print()
+    print("=" * 80)
+    print("REGISTER STATE AFTER FORWARDING RUN")
+    print("=" * 80)
+
+    simulator_with.registers.display()
+
+    print()
+    print("=" * 80)
+    print("MEMORY STATE AFTER FORWARDING RUN")
+    print("=" * 80)
+
+    simulator_with.memory.display()
+
+    print()
+    print("=" * 80)
+    print("PROGRAM FINISHED")
+    print("=" * 80)
+
+
+if __name__ == "__main__":
+    main()
